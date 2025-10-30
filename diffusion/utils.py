@@ -1,6 +1,7 @@
 import time
 import math
 
+# 主要用於 GDM 訓練時的進度顯示。
 
 def print_banner(s, separator="-", num_star=60):
 	print(separator * num_star, flush=True)

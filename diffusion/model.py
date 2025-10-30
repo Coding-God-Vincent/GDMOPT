@@ -3,6 +3,9 @@ import torch.nn as nn
 from .helpers import SinusoidalPosEmb
 from tianshou.data import Batch, ReplayBuffer, to_torch
 
+#------------------------------------------------------------------------------------------------------------------#
+# With Expert data & Without 的 GDM 都用這個
+#------------------------------------------------------------------------------------------------------------------#
 class MLP(nn.Module):
     def __init__(
         self,
@@ -32,7 +35,10 @@ class MLP(nn.Module):
             _act(),
             nn.Linear(hidden_dim, action_dim)
         )
-
+    
+    # x : x_t。shape (batch_size, action_dim)
+    # time : t of each data。shape (batch_size)
+    # state : shape (batch_size, state_dim)
     def forward(self, x, time, state):
         processed_state = self.state_mlp(state)
         t = self.time_mlp(time)
@@ -41,7 +47,9 @@ class MLP(nn.Module):
         # x = self.final_layer(x)
         return x
 
-
+#------------------------------------------------------------------------------------------------------------------#
+# without Expert data 實惠用到的 Twin Q-networks
+#------------------------------------------------------------------------------------------------------------------#
 class DoubleCritic(nn.Module):
     def __init__(
             self,

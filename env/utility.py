@@ -8,6 +8,7 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 
+# 沒用到，創建狀態時就有用均勻分布取樣出 channel gain 了
 def rayleigh_channel_gain(ex, sta):
     num_samples = 1
     gain = np.random.normal(ex, sta, num_samples)
@@ -16,6 +17,8 @@ def rayleigh_channel_gain(ex, sta):
     return gain
 
 # Function to implement water filling algorithm for power allocation
+# s -> state aka channel gains of the channels (shape M)
+# return expert，專家分給各通道的功率比 (shape M)，sumdata_rate，專家達到的 sum rate(shape 1)，subexpert，比專家還要爛一點的分配 (shape M)
 def water(s, total_power):
     a = total_power
     # Define the channel gain and noise level
@@ -50,28 +53,33 @@ def water(s, total_power):
     sumdata_rate = np.sum(data_rate)
     # print('p_n_final', p_n_final)
     # print('data_rate', sumdata_rate)
-    expert = p_n_final / total_power
+    expert = p_n_final / total_power  # 分配給各 channel 的功率比 (shape M)
     subexpert = p_n_final / total_power + np.random.normal(0, 0.1, len(p_n_final))
     return expert, sumdata_rate, subexpert
 
 # Function to compute utility (reward) for the given state and action
+# action 為一個 M 維向量，代表每一個通道分配的 logit
+# 這邊會把 action 中各維的數字轉為比例，再依照此比例將 logit 轉換為真實的功率
+# State 為一個 M 維向量，代表每一個通道的 channel gain
 def CompUtility(State, Aution):
     actions = torch.from_numpy(np.array(Aution)).float()
     actions = torch.abs(actions)
     # actions = torch.sigmoid(actions)
     Aution = actions.numpy()
     total_power = 3
-    normalized_weights = Aution / np.sum(Aution)
-    a = normalized_weights * total_power
+    normalized_weights = Aution / np.sum(Aution)  # 將 logit 轉為分配的比例
+    a = normalized_weights * total_power  # a 為各頻道真正分配到的功率總量
 
     g_n = State
     SNR = g_n * a
-
-    data_rate = np.log2(1 + SNR)
+    data_rate = np.log2(1 + SNR)  # shape (M), 各通道能達到的資料傳輸速率
 
     expert_action, sumdata_rate, subopt_expert_action = water(g_n, total_power)
 
-    reward = np.sum(data_rate) - sumdata_rate
+    # **reward 幹嘛減掉 sumdata_rate，論文中有說明 reward 是用 objective value (已修正)
     # reward = np.sum(data_rate) - sumdata_rate
+    reward = np.sum(data_rate)
 
-    return reward, expert_action, subopt_expert_action, Aution
+    # **env.py 那邊的 step() 將最後的 Aution 設為 real action，所以應該要是各頻道真實的功率分配才對 (已修正)
+    # return reward, expert_action, subopt_expert_action, Aution
+    return reward, expert_action, subopt_expert_action, a

@@ -1,0 +1,8 @@
+1. 有兩個 main.py。都是一樣的 train 和 inference 流程。差在一個是 CLI 控制 (root)，一個是 GUI (Softward) 控制。
+
+2. bc_coef : True -> 有 expert data 的訓練 (behavior cloning)
+   bc_coef : False -> 無 expert data 的訓練
+
+3. 不論真實或近似的後驗分布，其 variance 都不是 beta_t * I。這邊一律嚴謹推倒的 variance，並且取 clamp 之後的 log。
+
+4. 
