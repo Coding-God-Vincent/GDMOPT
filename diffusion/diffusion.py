@@ -13,7 +13,8 @@ from .helpers import (  # . 代表 "當前檔案所在的資料夾"
 )
 from .utils import Progress, Silent
 
-#%%
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------#
+
 # Define the main Diffusion class that inherits from PyTorch's nn.Module
 # 定義許多在寫 GDM 時會用到的函式，包括完整的 Denoise 等
 class Diffusion(nn.Module):
@@ -31,7 +32,7 @@ class Diffusion(nn.Module):
         self.action_dim = action_dim
         self.max_action = max_action  # 1，將 action 限縮在 [-max_action, max_action]
         self.model = model
-        self.n_timesteps = int(n_timesteps)
+        self.n_timesteps = int(n_timesteps)  # denoise steps
         self.clip_denoised = clip_denoised  # boolean, 是否將輸出的動作限制在 [-max_action, max_action]
         self.bc_coef = bc_coef  # true -> with expert data, false -> without expert data
 
@@ -47,14 +48,18 @@ class Diffusion(nn.Module):
             betas = cosine_beta_schedule(n_timesteps)
         elif beta_schedule == 'vp':
             betas = vp_beta_schedule(n_timesteps)
+
         # Define alpha parameters related to the beta schedule
         alphas = 1. - betas  # [1-\beta_0, 1-\beta_1, ..., 1-\beta_(n-1)]
         alphas_cumprod = torch.cumprod(alphas, axis=0)  # alpha_bar in each t. [alpha_bar_0, alpha_bar_1, ... alpha_bar_n-1]  # cumprod() : 累乘
-        alphas_cumprod_prev = torch.cat([torch.ones(1), alphas_cumprod[:-1]])  # [1, alpha_bar_0, ..., alpha_bar_n-2]
+        alphas_cumprod_prev = torch.cat([torch.ones(1), alphas_cumprod[:-1]])  # [1, alpha_bar_0, ..., alpha_bar_n-2] -> alphas_cumprod_prev[t] = alpha_bar_t-1 
 
         #------------------------------------------------------------------------------------------------------------------#
-        # 將固定不更新但要跟著模型走的 tensor 存入的 register_buffer。當模型被宣告之後，這些被註冊的值也都會在
-        # register_buffer : Module 提供的方法。可以用來儲存上述用途的值進模型
+        # 將固定不更新但要跟著模型走的 tensor 存入的 register_buffer。當模型被宣告之後，這些被註冊的值也都會在。(此為 nn.Module 特有)
+        # register_buffer : nn.Module 提供的方法。可以用來儲存上述用途的值進模型
+        # 在使用時直接呼叫即可，例如 : 
+        # diffusion = Diffusion()
+        # diffusion.betas  # 就會叫出 register_buffer 中的 betas
         #------------------------------------------------------------------------------------------------------------------#
     
         # Register these values as buffers in the module, which PyTorch will track
@@ -62,36 +67,35 @@ class Diffusion(nn.Module):
         self.register_buffer('alphas_cumprod', alphas_cumprod)  # [alpha_bar_t], t = 1~timestep
         self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)  # [1, alpha_bar_t], t = 1~timestep-1
 
+        # use 1. instead of 1 是為了確保電腦皆使用浮點樹運算。雖然 Python 會自動辨識，但這邊應該是為了確保完全不會有意外
         # Pre-calculate some quantities for the diffusion process and posterior
         # distribution calculation based on alpha and beta schedules
         # calculations for diffusion q(x_t | x_{t-1}) and others
-        self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
-        self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
-        self.register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))
-        self.register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod))
-        self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))
+        self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))  # sqrt_alphas_cumprod[t] = sqrt(alpha_bar_t)
+        self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))  # sqrt_one_minus_alphas_cumprod[t] = sqrt(1 - alpha_bar_t)
+        self.register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))  # log_one_minus_alphas_cumprod[t] = log(1 - alpha_bar_t)
+        self.register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod))  # sqrt_recip_alphas_cumprod[t] = sqrt(1 / alpha_bar_t)
+        self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))  # sqrt_recipm1_alphas_cumprod[t] = sqrt((1 / alpha_bar_t) - 1)
 
-        # More pre-calculations for the posterior distribution
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
+        # More pre-calculations for the posterior distribution q(x_{t-1} | x_t, x_0) & p(x_{t-1} | x_t, x_0_hat)
         # 1. q(x_{t-1}|x_t) 的 variance
         # 在論文中，這個 posterior 的 variance 被設為 \beta_t I，那是這邊的近似，兩種都可以，這邊這樣比較嚴謹
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
         self.register_buffer('posterior_variance', posterior_variance)
-        # 因為有時 posterior_variance 會算出 0，這邊用一個很小的值替換，避免梯度爆炸，這是為何要用 clipped。
-        # 因為使用 log variance 能使得數值穩定、避免負值，也與理論一致，這是為何要用 log。
+        # 因為有時 posterior_variance 會算出 0，這邊用一個很小的值替換，避免梯度爆炸，這是為何要用 clipped
+        # 因為使用 log variance 能使得數值穩定 (避免 overflow、underflow)，也與理論一致，這是為何要用 log。這是一個常見的深度學習技巧
         # 由上，我們在整個 GDM 之中，我們所謂的 \beta_t I 就是指 posterior_log_variance_clipped。並不會用 posterior_variance
-        # Log calculation clipped to avoid log(0)
-        # ## log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
-        # 這個 posterior_log_variance_clipped 存的是個時間點的 log(variance) = log(\sigma^2)
+        # Log calculation clipped to avoid log(0) at the begining of the diffusion chain
+        # 這個 posterior_log_variance_clipped 存的是各時間點的 log(variance) = log(\sigma^2)
         self.register_buffer('posterior_log_variance_clipped',
-                             torch.log(torch.clamp(posterior_variance, min=1e-20)))
+                             torch.log(torch.clamp(posterior_variance, min=1e-20)))  # torch.log -> 以 e 為底數的 log，即 ln
         
-        # 2. q(x_{t-1}|x_t) 的 mean = coef1 * x_0 + coef2 * x_1
+        # 2. Formula of posterior 的 mean = coef1 * x_0 + coef2 * x_t
         # shape (timesteps)
         self.register_buffer('posterior_mean_coef1',
-                             betas * np.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
+                             betas * np.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))  # ** 這邊應該要用 torch.log，因為 alphas_cumprod_prev 是一個 tensor (已測試，沒差，出來的結果仍為 torch.tensor)
         self.register_buffer('posterior_mean_coef2',
-                             (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod))
+                             (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod))  # ** 這邊也是
 
         # Select the appropriate loss function from the predefined Losses dictionary
         self.loss_fn = Losses[loss_type]()
@@ -100,36 +104,32 @@ class Diffusion(nn.Module):
 
 
     #------------------------------------------------------------------------------------------------------------------#
-    # 由 x_t, t , epsilon 去 Predict the 近似 x_0 (x_0_hat) by the given diffused state at time t (x_T) and noise
+    # use x_t, t , epsilon to estimate the approximated x_0 (x_0_hat) by the given diffused state at time t (x_T) and noise
     # coef 會跟 x_t 的每一個維度逐項相乘
     # 從 x_t 和模型預測出的 epsilon 來計算近似的 x_0
     # x_t -> shape (batch_size, action_dim)
     # t -> shape (batch_size), t -> integer
     # noise -> shape (batch_size, action_dim)
-    # return shape (batch_size, action_dim)
+    # return shape (batch_size, action_dim) (一個 batch 各筆資料的 x_0_hat)
     #------------------------------------------------------------------------------------------------------------------#
     def predict_start_from_noise(self, x_t, t, noise):
         '''
             if self.explore_solution, model output is (scaled) noise;
             otherwise, model predicts x0 directly
         '''
-        if self.bc_coef:  # 代表現在有 expert data，不用做這件事情
+        if self.bc_coef:  # 代表現在有 expert data，不用做這件事情 (因為在此實作中，有專家資料時會直接輸出 x_0_hat)
             return noise
         else:
-            # extract : shape: (batch_size, 1) * (batch_size, action_dim) -> (batch_size, action_dim)
-            # ex:
-            # a = torch.tensor([[2], [3], [4]]) -> shape (3, 1)
-            # b = torch.tensor([[1, 2, 3], [2, 3, 4], [4, 5, 6]]) -> shape(3, 3)
-            # a*b = tensor([[ 2,  4,  6],
-            #               [ 6,  9, 12],
-            #               [16, 20, 24]])
+            # extract -> 把一個 batch 中各個時間點 t 所對應的係數取出放在同一個 tensor 中回傳
+            # 像這邊就是把要一個 batch 中各筆資料所對應的 x_0_hat。公式為 x_0_hat = coef1 * x_t - coef2 * noise
+            # extract 就是要把各筆資料地 t 對應的 coef1 & coef2 取出。return shape (batch_size, 1)
             return ( 
                     extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
                     extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
             )
 
     #------------------------------------------------------------------------------------------------------------------#
-    # 由 x_t, t, x_0 計算真實後驗分布 q(x_{t-1}|x_t, x_0) 的 mean、variance、log variance
+    # 由 x_t, t, x_0 計算後驗分布 q(x_{t-1}|x_t, x_0) or p(x_{t-1} | x_t, t, g) 的 mean、variance、log variance
     # x_start -> 一個 batch 的 x_0。shape (batch_size, action_dim)
     # x_t -> 一個 batch 的 x_t。shape (batch_size, action_dim)
     # t -> 一個 batch 各 x_t 的時間步。shape (batch_size)
@@ -194,7 +194,7 @@ class Diffusion(nn.Module):
         #     torch.manual_seed(t)
         #     noise = torch.randn_like(x)
         
-        # 除了最後一步不用 (t=0) 之外，其餘每一次 denoise 出來的平均值都要加上一個額外的噪聲，增加多樣性。
+        # 除了最後一步 (t=0) 不用之外，其餘每一次 denoise 出來的平均值都要加上一個額外的噪聲，增加多樣性
         # torch.randn_like(input, dtype, device, requires_grad) -> 輸出一個跟 input 維度相同的常態分佈取樣數值的 tensor
         # 每個維度都有獨立的噪聲
         noise = torch.randn_like(x)  # shape (batch_size, action_dim)
@@ -204,6 +204,7 @@ class Diffusion(nn.Module):
         # ex: t = [1, 0, 2] -> (t==0) = [false, true, false] -> (1 - (t==0)) = [1, 0, 1]
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))  # shape (batch_size, 1)
 
+        # 等於是說 x_{t-1} 都是靠重參在取樣，但取樣出 x_0 時只有輸出 model_mean 而已
         # 用 reparameterization 取樣 -> x_(t-1) = mean + sigma(標準差) * noise,  noise ~ N(0, I)
         # model_log_variance -> log(\sigma^2)
         # 0.5 * log(\sigma^2) = log(\sigma)
@@ -271,7 +272,7 @@ class Diffusion(nn.Module):
     
     #------------------------------------------------------------------------------------------------------------------#
     # @torch.no_grad()
-    # 一次把一個 batch 的 state 傳入 p_sample_loop 得到一個 batch 的預測 x_0 後 clamp [-max_action, max_action]
+    # 一次把一個 batch 的 state 傳入 p_sample_loop 得到一個 batch 的預測 x_0 後 clamp [-max_action, max_action] (就是對 p_sample_loop 的結果做一個 clamp 而已)
     # state : shape (batch_size, action_dim)
     # *args & **kwargs -> 其餘參數 (verbose & return_diffusion)，用在傳遞給 p_sample_loop
     # return : action -> 裁減過的 action。shape (batch_size, action_dim)
@@ -308,6 +309,7 @@ class Diffusion(nn.Module):
         return sample
 
     #------------------------------------------------------------------------------------------------------------------#
+    # 有專家資料才會用到這個函式
     # 傳入一個 batch 的 x_0, state, t，在這邊會做 forward process，之後將 x_t, t, state 傳入模型輸出噪聲預測，最後算出這整個 batch 的 loss
     # x_start : x_0。shape (batch_size, action_dim)
     # state : shape (batch_size, state_dim)

@@ -76,17 +76,14 @@ class DoubleCritic(nn.Module):
                                       nn.Linear(hidden_dim, hidden_dim),
                                       _act(),
                                       nn.Linear(hidden_dim, 1))
-    # def forward(self, obs):
-    #     return self.q1_net(obs), self.q2_net(obs)
-    #
-    # def q_min(self, obs):
-    #     return torch.min(*self.forward(obs))
+
+    # return shape 一個 tuple ((batch_size, 1), (batch_size, 1))
     def forward(self, state, action):
         processed_state = self.state_mlp(state)
         x = torch.cat([processed_state, action], dim=-1)
         return self.q1_net(x), self.q2_net(x)
-
+    
+    # return shape (batch_size)
     def q_min(self, obs, action):
-        # obs = to_torch(obs, device='cuda:0', dtype=torch.float32)
-        # action = to_torch(action, device='cuda:0', dtype=torch.float32)
+        # *(self.forward(obs, action)) 是把 forward 的那個 tuple 拆開成兩個 (batch_size, 1)
         return torch.min(*self.forward(obs, action))

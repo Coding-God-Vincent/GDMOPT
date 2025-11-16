@@ -7,12 +7,12 @@ import torch.nn.functional as F
 #------------------------------------------------------------------------------------------------------#
 # 對 timestep 進行位置編碼 (positional embedding)，讓模型知道現在是 Diffusion 的第幾步
 # 並非一個神經網路，只是因為很常被當作模組呼叫所以繼承 nn.Module 來寫
+# 用在 model.py，會將時間輸入並輸出 embedding 後的結果
 #------------------------------------------------------------------------------------------------------#
-
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        self.dim = dim
+        self.dim = dim  # 把一個時間資訊 embbeding 成一個 64 維的張量
 
     def forward(self, x):
         device = x.device
@@ -21,19 +21,20 @@ class SinusoidalPosEmb(nn.Module):
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
+        return emb  # shape (batch_size, dim)
 
 #------------------------------------------------------------------------------------------------------#
+# 為了一次處理一個 batch 的資料才需要此函示
 # 將一個 batch 中各 x_t 的時間步 t 和其對應的係數 a 取出放在一個 tensor 之中
-# a -> 跟 t 有關的係數，例如各時間點的 \alpha_bar_t。shape (timesteps)
+# a -> 跟 t 有關的係數，例如 alphas_cumprod = [alpha_bar_0, alpha_bar_1, ..., alpha_bar_n-1]。shape (timesteps)
 # t -> 時間點，每一維度的值皆介於 [0, timesteps-1]。shape (batch_size)
 #------------------------------------------------------------------------------------------------------#
 # * -> 讓值從資料結構中解脫變成獨立的值。ex: *(1, 2, 3) -> 1, 2, 3
 def extract(a, t, x_shape):
-    b, *_ = t.shape  # b -> timesteps
+    b, *_ = t.shape  # b -> batch_size
     out = a.gather(-1, t)  # dim= -1 (即最後一個維度，在這邊 a.shape = (timesteps)) # 這邊就是取出時間點 t 對應的係數 # output_shape (timesteps)
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))  # shape (timesteps, 1, 1, ..., 1) 後面的 1 有 len(x_shape - 1) 
-    # 若 x_shape (batch_size, action_dim)，len(x_shape) = 1，那 out.shape 會變成 (b, 1)
+    # 若 x_shape (batch_size, action_dim)，len(x_shape) = 1，那 out.shape 會變成 (batch_size, 1)
 
 #------------------------------------------------------------------------------------------------------#
 # 3 types of \beta scheduling

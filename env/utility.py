@@ -16,9 +16,11 @@ def rayleigh_channel_gain(ex, sta):
     gain = np.abs(gain) ** 2
     return gain
 
+#------------------------------------------------------------------------------------------------------------------#
 # Function to implement water filling algorithm for power allocation
 # s -> state aka channel gains of the channels (shape M)
 # return expert，專家分給各通道的功率比 (shape M)，sumdata_rate，專家達到的 sum rate(shape 1)，subexpert，比專家還要爛一點的分配 (shape M)
+#------------------------------------------------------------------------------------------------------------------#
 def water(s, total_power):
     a = total_power
     # Define the channel gain and noise level
@@ -57,10 +59,12 @@ def water(s, total_power):
     subexpert = p_n_final / total_power + np.random.normal(0, 0.1, len(p_n_final))
     return expert, sumdata_rate, subexpert
 
+#------------------------------------------------------------------------------------------------------------------#
 # Function to compute utility (reward) for the given state and action
 # action 為一個 M 維向量，代表每一個通道分配的 logit
 # 這邊會把 action 中各維的數字轉為比例，再依照此比例將 logit 轉換為真實的功率
 # State 為一個 M 維向量，代表每一個通道的 channel gain
+#------------------------------------------------------------------------------------------------------------------#
 def CompUtility(State, Aution):
     actions = torch.from_numpy(np.array(Aution)).float()
     actions = torch.abs(actions)
